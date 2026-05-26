@@ -54,18 +54,21 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("prompt")
-@click.option("--json", "json_output", is_flag=True,
-              help="Add `--output-format json` and pretty-print the parsed result.")
-@click.option("-m", "--model", default=None, help="Model id (agy -m).")
-@click.option("--sandbox", is_flag=True, help="Force sandboxed execution (agy --sandbox).")
+@click.option("-c", "--continue", "continue_last", is_flag=True,
+              help="Continue the most recent conversation (agy --continue).")
+@click.option("--conversation", default=None, help="Resume a conversation by ID.")
+@click.option("--add-dir", "add_dirs", multiple=True,
+              help="Add a directory to the workspace (repeatable; agy --add-dir).")
+@click.option("--sandbox", is_flag=True,
+              help="Run in a sandbox with terminal restrictions (agy --sandbox).")
 @click.option("--skip-permissions", is_flag=True,
-              help="agy --dangerously-skip-permissions (bypass safety prompts).")
+              help="agy --dangerously-skip-permissions (auto-approve tool use).")
 @click.option("--timeout", type=float, default=None,
               help="Kill agy after N seconds (exits 2 on timeout).")
 @_BINARY_OPTION
 @handle_errors
-def run(prompt, json_output, model, sandbox, skip_permissions, timeout, binary):
-    """Run a one-shot PROMPT through `agy -p` (headless command mode).
+def run(prompt, continue_last, conversation, add_dirs, sandbox, skip_permissions, timeout, binary):
+    """Run a one-shot PROMPT non-interactively via `agy -p` (print mode).
 
     Piped stdin is forwarded to agy, so you can do:
 
@@ -74,17 +77,13 @@ def run(prompt, json_output, model, sandbox, skip_permissions, timeout, binary):
     runner = AgyRunner(binary)
     result = runner.prompt(
         prompt,
-        json_output=json_output,
-        model=model,
         sandbox=sandbox,
         skip_permissions=skip_permissions,
+        continue_last=continue_last,
+        conversation=conversation,
+        add_dirs=list(add_dirs),
         timeout=timeout,
     )
-    if json_output and result.stdout.strip():
-        click.echo(json.dumps(result.json(), indent=2))
-        if result.stderr:
-            click.echo(result.stderr, err=True, nl=False)
-        sys.exit(result.returncode)
     _emit_and_exit(result)
 
 
@@ -107,18 +106,26 @@ def update(binary):
 @cli.command()
 @_BINARY_OPTION
 @handle_errors
-def inspect(binary):
-    """Show loaded rules, skills, hooks and MCP servers (agy inspect)."""
-    _emit_and_exit(AgyRunner(binary).inspect())
+def changelog(binary):
+    """Show the agy changelog / release notes (agy changelog)."""
+    _emit_and_exit(AgyRunner(binary).changelog())
 
 
 @cli.command(context_settings={"ignore_unknown_options": True})
 @click.argument("args", nargs=-1, type=click.UNPROCESSED)
 @handle_errors
+def plugin(args):
+    """Manage agy plugins (agy plugin ...). Example: agy-py plugin list."""
+    _emit_and_exit(AgyRunner(None).plugin(list(args)))
+
+
+@cli.command(context_settings={"ignore_unknown_options": True}, add_help_option=False)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+@handle_errors
 def raw(args):
     """Pass ARGS straight through to the agy binary (escape hatch).
 
-    Uses $AGY_BINARY / PATH to locate agy. Example: agy-py raw --help
+    Forwards everything to agy, including --help. Example: agy-py raw --help
     """
     _emit_and_exit(AgyRunner(None).raw(list(args)))
 

@@ -57,28 +57,30 @@ def test_prompt_builds_argv(fake_binary, monkeypatch):
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
         captured["kwargs"] = kwargs
-        return FakeProc(0, '{"ok": true}', "")
+        return FakeProc(0, "done", "")
 
     monkeypatch.setattr(core.subprocess, "run", fake_run)
-    result = AgyRunner().prompt(
+    AgyRunner().prompt(
         "hello",
-        json_output=True,
-        model="gpt-oss-120b",
+        continue_last=True,
+        conversation="abc123",
+        add_dirs=["src", "tests"],
         sandbox=True,
         skip_permissions=True,
     )
     assert captured["argv"][0] == fake_binary
     assert captured["argv"][1:] == [
         "-p", "hello",
-        "--output-format", "json",
-        "-m", "gpt-oss-120b",
+        "--continue",
+        "--conversation", "abc123",
+        "--add-dir", "src",
+        "--add-dir", "tests",
         "--sandbox",
         "--dangerously-skip-permissions",
     ]
     # stdin is left inherited so shell pipes flow through to agy.
     assert captured["kwargs"]["capture_output"] is True
     assert "stdin" not in captured["kwargs"]
-    assert result.json() == {"ok": True}
 
 
 def test_prompt_minimal_argv(fake_binary, monkeypatch):
@@ -89,12 +91,10 @@ def test_prompt_minimal_argv(fake_binary, monkeypatch):
     assert captured["argv"][1:] == ["-p", "just text"]
 
 
-def test_bad_json_raises(fake_binary, monkeypatch):
-    monkeypatch.setattr(core.subprocess, "run",
-                        lambda argv, **kw: FakeProc(0, "not json", ""))
-    result = AgyRunner().prompt("x", json_output=True)
+def test_result_json_helpers():
+    assert core.Result(0, '{"a": 1}', "").json() == {"a": 1}
     with pytest.raises(AgyError):
-        result.json()
+        core.Result(0, "not json", "").json()
 
 
 def test_timeout_maps_to_exit_2(fake_binary, monkeypatch):

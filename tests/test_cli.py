@@ -33,12 +33,12 @@ def test_run_propagates_exit_code(fake_binary, monkeypatch):
     assert "agent output" in result.output
 
 
-def test_run_json_pretty_prints(fake_binary, monkeypatch):
+def test_run_outputs_stdout(fake_binary, monkeypatch):
     monkeypatch.setattr(core.subprocess, "run",
-                        lambda argv, **kw: FakeProc(0, '{"answer":"42"}', ""))
-    result = CliRunner().invoke(cli_mod.cli, ["run", "q", "--json"])
+                        lambda argv, **kw: FakeProc(0, "agent says hi", ""))
+    result = CliRunner().invoke(cli_mod.cli, ["run", "q"])
     assert result.exit_code == 0
-    assert '"answer": "42"' in result.output  # indented => pretty-printed
+    assert "agent says hi" in result.output
 
 
 def test_doctor_errors_when_binary_missing(tmp_path, monkeypatch):

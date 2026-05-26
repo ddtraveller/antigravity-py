@@ -3,16 +3,18 @@
 Everything here is plain ``subprocess``/``json``/``shutil`` so it can be unit
 tested by mocking :func:`subprocess.run` without ``agy`` actually installed.
 
-Flag provenance (verified 2026-05-26)
--------------------------------------
-The official docs at antigravity.google confirm the install paths, the auth
-model, the ``~/.gemini/antigravity-cli/settings.json`` config location, and the
-launch overrides ``--sandbox`` / ``--dangerously-skip-permissions``.
+Flag provenance (verified against agy v1.0.2 on Windows, 2026-05-26)
+-------------------------------------------------------------------
+Confirmed by running ``agy --help``: the print/command mode ``-p`` (alias for
+``--print`` -- "run a single prompt non-interactively and print the response"),
+plus ``--sandbox``, ``--dangerously-skip-permissions``, ``-c`` / ``--continue``,
+``--conversation``, ``--add-dir``, and the subcommands ``update``,
+``changelog`` and ``plugin``. The Windows binary installs to
+``%LOCALAPPDATA%\\agy\\bin\\agy.exe``.
 
-The headless *command mode* (``agy -p "<prompt>"``), ``--output-format json``
-and ``-m <model>`` are documented only by third-party hands-on guides, not the
-official docs. They are centralized as the constants below so they are trivial
-to correct if the installed binary disagrees.
+The earlier third-party-attested ``--output-format json`` and ``-m <model>``
+flags do NOT exist in agy v1.0.2 and have been removed. ``settings.json`` lives
+at ``~/.gemini/antigravity-cli/settings.json`` per the official docs.
 """
 
 from __future__ import annotations
@@ -31,12 +33,13 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_TIMEOUT = 2
 
-# --- agy argument names (see module docstring re: provenance) ---
-FLAG_PROMPT = "-p"  # third-party attested
-FLAG_OUTPUT_FORMAT = "--output-format"  # third-party attested
-FLAG_MODEL = "-m"  # third-party attested
-FLAG_SANDBOX = "--sandbox"  # official
-FLAG_SKIP_PERMISSIONS = "--dangerously-skip-permissions"  # official
+# --- agy argument names (verified via `agy --help`, v1.0.2) ---
+FLAG_PRINT = "-p"  # alias for --print: run a single prompt non-interactively
+FLAG_SANDBOX = "--sandbox"
+FLAG_SKIP_PERMISSIONS = "--dangerously-skip-permissions"
+FLAG_CONTINUE = "--continue"
+FLAG_CONVERSATION = "--conversation"
+FLAG_ADD_DIR = "--add-dir"
 
 BINARY_ENV_VAR = "AGY_BINARY"
 
@@ -49,27 +52,30 @@ class AgyError(Exception):
         self.exit_code = exit_code
 
 
-def _windows_default_binary() -> str | None:
-    local = os.environ.get("LOCALAPPDATA")
-    if not local:
-        return None
-    return str(Path(local) / "Antigravity" / "agy.exe")
+def _default_binaries() -> list[str]:
+    """Platform default install locations for the ``agy`` binary."""
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if not local:
+            return []
+        return [
+            str(Path(local) / "agy" / "bin" / "agy.exe"),  # actual (agy v1.0.2)
+            str(Path(local) / "Antigravity" / "agy.exe"),  # per docs (fallback)
+        ]
+    return [str(Path.home() / ".local" / "bin" / "agy")]
 
 
 def find_binary(explicit: str | None = None) -> str:
     """Locate the ``agy`` executable.
 
     Search order: ``explicit`` argument, ``$AGY_BINARY``, ``PATH``, then the
-    platform's default install location from the official docs
-    (``%LOCALAPPDATA%\\Antigravity\\agy.exe`` on Windows, ``~/.local/bin/agy``
-    elsewhere). Raises :class:`AgyError` if nothing is found.
+    platform's default install location (``%LOCALAPPDATA%\\agy\\bin\\agy.exe`` on
+    Windows, ``~/.local/bin/agy`` elsewhere). Raises :class:`AgyError` if nothing
+    is found.
     """
     candidates: list[str | None] = [explicit, os.environ.get(BINARY_ENV_VAR)]
     candidates.append(shutil.which("agy"))
-    if sys.platform == "win32":
-        candidates.append(_windows_default_binary())
-    else:
-        candidates.append(str(Path.home() / ".local" / "bin" / "agy"))
+    candidates.extend(_default_binaries())
 
     for candidate in candidates:
         if not candidate:
@@ -160,31 +166,37 @@ class AgyRunner:
     def update(self) -> Result:
         return self._run(["update"])
 
-    def inspect(self) -> Result:
-        return self._run(["inspect"])
+    def changelog(self) -> Result:
+        return self._run(["changelog"])
+
+    def plugin(self, args: Iterable[str]) -> Result:
+        return self._run(["plugin", *list(args)])
 
     def raw(self, args: Iterable[str], timeout: float | None = None) -> Result:
         """Escape hatch: pass arbitrary arguments straight to ``agy``."""
         return self._run(list(args), timeout=timeout)
 
-    # -- headless command mode --
+    # -- print / command mode (agy -p) --
     def prompt(
         self,
         text: str,
         *,
-        json_output: bool = False,
-        model: str | None = None,
         sandbox: bool = False,
         skip_permissions: bool = False,
+        continue_last: bool = False,
+        conversation: str | None = None,
+        add_dirs: Iterable[str] | None = None,
         timeout: float | None = None,
         extra_args: Iterable[str] | None = None,
     ) -> Result:
-        """Run ``agy -p "<text>"`` (stateless command mode) and capture output."""
-        args: list[str] = [FLAG_PROMPT, text]
-        if json_output:
-            args += [FLAG_OUTPUT_FORMAT, "json"]
-        if model:
-            args += [FLAG_MODEL, model]
+        """Run ``agy -p "<text>"`` (non-interactive print mode) and capture output."""
+        args: list[str] = [FLAG_PRINT, text]
+        if continue_last:
+            args.append(FLAG_CONTINUE)
+        if conversation:
+            args += [FLAG_CONVERSATION, conversation]
+        for directory in add_dirs or []:
+            args += [FLAG_ADD_DIR, directory]
         if sandbox:
             args.append(FLAG_SANDBOX)
         if skip_permissions:
