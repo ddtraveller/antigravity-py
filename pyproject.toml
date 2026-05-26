@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agy-py"
+version = "0.1.0"
+description = "Thin Python wrapper around Google Antigravity's `agy` CLI."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["click>=8.1"]
+
+[project.scripts]
+agy-py = "agy_py.cli:cli"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["agy_py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
