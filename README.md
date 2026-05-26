@@ -80,6 +80,7 @@ scriptable parts and smooths the rough edges:
 | Pipe data into the agent | `cat file | agy-py run "..."` (stdin forwarded) |
 | Timeout long runs | `--timeout SECONDS` (exit code 2) |
 | Check install & config health | `agy-py doctor` (with `--json`) |
+| Workspace-trust check / fix | `agy-py doctor`, `run --trust`, `config trust` |
 | Read/write `settings.json` | `agy-py config get/set/path` |
 | Manage plugins / view changelog | `agy-py plugin ...`, `agy-py changelog` |
 | Update / version | `agy-py update`, `agy-py version` |
@@ -137,9 +138,9 @@ If none resolve, every command fails fast with an actionable message (exit 1).
 ## Quickstart
 
 ```bash
-agy-py doctor                          # Is agy installed? Where's its config?
+agy-py doctor                          # agy installed? folder trusted? config paths?
 agy-py version                         # agy --version  → e.g. 1.0.2
-agy-py run "Write a Python hello world"
+agy-py run "Write a Python hello world" --trust   # --trust: agy -p hangs in untrusted folders
 agy-py run "Add docstrings" --add-dir ./src --sandbox
 cat error.log | agy-py run "Explain the root cause of this stack trace"
 agy-py run "And now add type hints" --continue   # resume the last conversation
@@ -149,7 +150,7 @@ agy-py run "And now add type hints" --continue   # resume the last conversation
 
 | Command | Wraps / does | Key options |
 |---------|--------------|-------------|
-| `agy-py run "PROMPT"` | `agy -p "PROMPT"` (non-interactive print mode) | `-c/--continue`, `--conversation`, `--add-dir`, `--sandbox`, `--skip-permissions`, `--timeout`, `--binary` |
+| `agy-py run "PROMPT"` | `agy -p "PROMPT"` (print mode; renders to your terminal) | `-c/--continue`, `--conversation`, `--add-dir`, `--sandbox`, `--skip-permissions`, `--trust`, `--timeout`, `--binary` |
 | `agy-py version` | `agy --version` | `--binary` |
 | `agy-py update` | `agy update` | `--binary` |
 | `agy-py changelog` | `agy changelog` (release notes) | `--binary` |
@@ -160,6 +161,7 @@ agy-py run "And now add type hints" --continue   # resume the last conversation
 | `agy-py config path` | prints `settings.json` location | — |
 | `agy-py config get [KEY]` | reads all settings or a dotted `KEY` | `--json` |
 | `agy-py config set KEY VALUE` | writes a dotted `KEY` (`VALUE` parsed as JSON) | — |
+| `agy-py config trust [PATH]` | add `PATH` (default cwd) to `trustedWorkspaces` | — |
 | `agy-py config mcp-path` / `hooks-path` | prints MCP / hooks config paths (best-effort) | — |
 
 Run `agy-py --help` or `agy-py <command> --help` for full details.
@@ -197,36 +199,38 @@ Reply with only 'OK' or a bullet list of issues." --timeout 120 || exit 1
     git diff origin/main... | agy-py run "Summarize this PR's risk" --timeout 300
 ```
 
-> In print mode `agy` returns the agent's response as plain text — pipe it
-> wherever you need it. (`agy` v1.0.2 has no JSON-output flag; ask the agent to
-> reply in JSON if you want to parse it.) CI auth via `ANTIGRAVITY_API_KEY` is
-> third-party-documented and unverified here — confirm against your version.
+> **Important (agy v1.0.2):** the agent's response renders only to an interactive
+> terminal, so you can pipe input *in* (as above) and gate on the **exit code**,
+> but you cannot capture or pipe the response *out*, and there is no JSON flag.
+> `agy-py run` inherits your terminal so you see the output live. CI auth via
+> `ANTIGRAVITY_API_KEY` is third-party-documented and unverified here.
 
 ## Python API
 
 ```python
-from agy_py import AgyRunner, AgyError
+from agy_py import AgyRunner, core
 
 runner = AgyRunner()                       # locates the agy binary (raises AgyError if missing)
 
+# prompt() inherits your terminal: agy v1.0.2 renders the response only to a TTY,
+# so it prints directly and Result.stdout is empty -- only returncode is useful.
 result = runner.prompt("Explain this codebase", add_dirs=["src"], timeout=120)
-print("exit:", result.returncode)
-print(result.stdout)
+print("agy exit code:", result.returncode)
 
-# Continue the last conversation:
-follow_up = runner.prompt("Now suggest tests", continue_last=True)
-
-# Pass arbitrary args through:
+# Captured commands DO return output:
+print(runner.version().stdout)             # e.g. "1.0.2"
 print(runner.raw(["--help"]).stdout)
 
-# If you prompt the agent to emit JSON, parse it:
-data = runner.prompt("Reply with JSON {\"ok\":true}").json()  # raises AgyError on bad JSON
+# Workspace trust (agy -p hangs in an untrusted folder):
+if not core.is_trusted():
+    core.trust_workspace()                 # add cwd to trustedWorkspaces
 ```
 
-`AgyRunner` methods: `prompt(...)`, `version()`, `update()`, `changelog()`,
-`plugin(args)`, `raw(args)`. Each returns a `Result(returncode, stdout, stderr)`
-with `.ok` and `.json()` helpers. Settings helpers live at module level:
-`get_setting()`, `set_setting()`, `settings_path()`.
+`AgyRunner` methods: `prompt(...)` (inherits the terminal), and `version()`,
+`update()`, `changelog()`, `plugin(args)`, `raw(args)` (these capture output).
+Each returns a `Result(returncode, stdout, stderr)` with `.ok` / `.json()`.
+Module-level helpers: `get_setting()`, `set_setting()`, `settings_path()`,
+`is_trusted()`, `trust_workspace()`, `trusted_workspaces()`.
 
 ## Configuration
 
@@ -283,12 +287,20 @@ real install. Provenance, so you know what to trust:
 - `-m <model>` — no top-level model flag (model selection is config-driven).
 - `inspect` subcommand.
 
-**⚠️ Not yet verified end-to-end**
-- A live `agy -p` agent round-trip: confirmed the wrapper builds the right
-  command and handles timeouts, but a successful response requires `agy` to be
-  **authenticated** (interactive Google Sign-In on first run).
-- The MCP / hooks config paths and `ANTIGRAVITY_API_KEY` (env vars don't appear
-  in `agy --help`).
+**⚠️ Known limitations of `agy` v1.0.2 (found by testing)**
+- **Workspace trust:** `agy -p` blocks on an interactive "trust this folder?"
+  prompt in any workspace not listed in `trustedWorkspaces`. `agy-py run` warns
+  about this; `--trust` (and `agy-py config trust`) add the folder, and
+  `agy-py doctor` reports the current folder's trust state.
+- **Output needs a real terminal:** print mode renders the agent's response only
+  to an interactive TTY. With captured/piped/redirected stdout it emits nothing,
+  so `agy-py run` **inherits your terminal** rather than capturing — you see the
+  response live, but it cannot be programmatically captured or piped *out*, and
+  there is no JSON output, on this version.
+- **Non-interactive stdin:** without an interactive console or a real pipe
+  (data + EOF), `agy -p` can block on stdin; bound scripted runs with `--timeout`.
+- The MCP / hooks config paths and `ANTIGRAVITY_API_KEY` remain unverified
+  (env vars don't appear in `agy --help`).
 
 All wrapped flag names are centralized as constants in
 [`agy_py/core.py`](agy_py/core.py) for easy correction on future `agy` versions.
@@ -301,9 +313,11 @@ Use `agy-py run "your prompt"`, which invokes `agy -p` (print mode) so the agent
 processes one prompt and exits — no interactive TUI.
 
 **`agy-py run` hangs or times out (exit 2). Why?**
-Most likely `agy` isn't authenticated yet. Run `agy` once in a normal terminal
-to complete the browser Google Sign-In, then retry. Use `--timeout` to bound
-runs in scripts.
+Two common causes on `agy` v1.0.2: (1) the folder isn't a trusted workspace, so
+`agy` blocks on a now-invisible trust prompt — run `agy-py doctor` to check, then
+use `--trust` or `agy-py config trust`; (2) there's no interactive terminal, so
+print mode blocks on stdin and/or renders nothing. `agy-py run` is meant to be
+used from a real terminal; bound scripted runs with `--timeout`.
 
 **`agy-py` says it can't find the `agy` binary. What do I do?**
 Install the binary (see [Installation](#installation)), or set

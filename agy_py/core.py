@@ -144,20 +144,23 @@ class AgyRunner:
     def __init__(self, binary: str | None = None):
         self.binary = find_binary(binary)
 
-    def _run(self, args: Iterable[str], timeout: float | None = None) -> Result:
+    def _run(self, args: Iterable[str], timeout: float | None = None,
+             capture: bool = True) -> Result:
         argv = [self.binary, *args]
         try:
-            proc = subprocess.run(
-                argv,
-                capture_output=True,  # stdin stays inherited so pipes pass through
-                text=True,
-                timeout=timeout,
-            )
+            if capture:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+                return Result(proc.returncode, proc.stdout or "", proc.stderr or "")
+            # Inherit the parent's stdio. agy's print mode renders only to a real
+            # interactive terminal (TTY); with a captured/piped stdout it emits
+            # nothing, so the agent's response must reach the user's terminal
+            # directly. We therefore cannot capture it on agy v1.0.2.
+            proc = subprocess.run(argv, timeout=timeout)
+            return Result(proc.returncode, "", "")
         except subprocess.TimeoutExpired as exc:
             raise AgyError(f"`agy` timed out after {timeout}s.", EXIT_TIMEOUT) from exc
         except OSError as exc:
             raise AgyError(f"Failed to execute `{self.binary}`: {exc}.", EXIT_ERROR) from exc
-        return Result(proc.returncode, proc.stdout or "", proc.stderr or "")
 
     # -- simple pass-through commands --
     def version(self) -> Result:
@@ -203,7 +206,8 @@ class AgyRunner:
             args.append(FLAG_SKIP_PERMISSIONS)
         if extra_args:
             args += list(extra_args)
-        return self._run(args, timeout=timeout)
+        # capture=False: agy renders the response to the terminal, not a pipe.
+        return self._run(args, timeout=timeout, capture=False)
 
 
 def diagnostics(binary: str | None = None) -> dict[str, Any]:
@@ -222,6 +226,8 @@ def diagnostics(binary: str | None = None) -> dict[str, Any]:
     info["settings_exists"] = settings_path().exists()
     info["gemini_dir"] = str(Path.home() / ".gemini" / "antigravity")
     info["gemini_dir_exists"] = (Path.home() / ".gemini" / "antigravity").exists()
+    info["cwd"] = os.getcwd()
+    info["cwd_trusted"] = is_trusted()
     return info
 
 
@@ -249,6 +255,12 @@ def get_setting(key: str | None = None) -> Any:
     return cursor
 
 
+def _write_settings(data: dict[str, Any]) -> None:
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
 def set_setting(key: str, value: Any) -> dict[str, Any]:
     data = load_settings()
     cursor = data
@@ -258,7 +270,38 @@ def set_setting(key: str, value: Any) -> dict[str, Any]:
         if not isinstance(cursor, dict):
             raise AgyError(f"Cannot set '{key}': '{part}' is not an object.", EXIT_ERROR)
     cursor[parts[-1]] = value
-    path = settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _write_settings(data)
     return data
+
+
+# --- workspace trust -------------------------------------------------------
+# `agy` blocks on an interactive "trust this folder?" prompt in any workspace
+# not listed in settings.json's `trustedWorkspaces`. In non-interactive use that
+# prompt is invisible and the agent appears to hang, so the wrapper checks it.
+
+def _norm_path(path: str) -> str:
+    return os.path.normcase(os.path.normpath(str(Path(path).expanduser().resolve())))
+
+
+def trusted_workspaces() -> list[str]:
+    workspaces = load_settings().get("trustedWorkspaces", [])
+    return workspaces if isinstance(workspaces, list) else []
+
+
+def is_trusted(path: str | None = None) -> bool:
+    target = _norm_path(path or os.getcwd())
+    return any(_norm_path(w) == target for w in trusted_workspaces())
+
+
+def trust_workspace(path: str | None = None) -> str:
+    """Add ``path`` (default: cwd) to ``trustedWorkspaces``; returns the path."""
+    target = str(Path(path or os.getcwd()).expanduser().resolve())
+    data = load_settings()
+    workspaces = data.get("trustedWorkspaces")
+    if not isinstance(workspaces, list):
+        workspaces = []
+    if not any(_norm_path(w) == _norm_path(target) for w in workspaces):
+        workspaces.append(target)
+        data["trustedWorkspaces"] = workspaces
+        _write_settings(data)
+    return target

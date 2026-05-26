@@ -78,8 +78,8 @@ def test_prompt_builds_argv(fake_binary, monkeypatch):
         "--sandbox",
         "--dangerously-skip-permissions",
     ]
-    # stdin is left inherited so shell pipes flow through to agy.
-    assert captured["kwargs"]["capture_output"] is True
+    # prompt() uses inherited stdio (capture=False): no capture_output/stdin kwargs.
+    assert "capture_output" not in captured["kwargs"]
     assert "stdin" not in captured["kwargs"]
 
 
@@ -133,3 +133,16 @@ def test_get_missing_setting_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(core.Path, "home", lambda: tmp_path)
     with pytest.raises(AgyError):
         core.get_setting("does.not.exist")
+
+
+def test_trust_workspace_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(core.Path, "home", lambda: tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    assert core.is_trusted(str(proj)) is False
+    core.trust_workspace(str(proj))
+    assert core.is_trusted(str(proj)) is True
+    assert str(proj.resolve()) in core.trusted_workspaces()
+    # idempotent: trusting again does not duplicate
+    core.trust_workspace(str(proj))
+    assert core.trusted_workspaces().count(str(proj.resolve())) == 1

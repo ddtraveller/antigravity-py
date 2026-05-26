@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import sys
 
 import click
@@ -65,15 +66,30 @@ def cli() -> None:
               help="agy --dangerously-skip-permissions (auto-approve tool use).")
 @click.option("--timeout", type=float, default=None,
               help="Kill agy after N seconds (exits 2 on timeout).")
+@click.option("--trust", is_flag=True,
+              help="Add the current folder to trustedWorkspaces first "
+                   "(agy -p hangs in untrusted folders).")
 @_BINARY_OPTION
 @handle_errors
-def run(prompt, continue_last, conversation, add_dirs, sandbox, skip_permissions, timeout, binary):
+def run(prompt, continue_last, conversation, add_dirs, sandbox, skip_permissions, timeout, trust, binary):
     """Run a one-shot PROMPT non-interactively via `agy -p` (print mode).
 
     Piped stdin is forwarded to agy, so you can do:
 
         cat data.csv | agy-py run "Summarize this data"
+
+    NOTE: agy renders the response to an interactive terminal; in untrusted
+    workspaces it blocks on a trust prompt (use --trust).
     """
+    if trust:
+        click.echo(f"Trusted workspace: {core.trust_workspace()}", err=True)
+    elif not core.is_trusted():
+        click.echo(
+            f"warning: '{os.getcwd()}' is not a trusted agy workspace -- agy may "
+            "hang on an interactive trust prompt. Re-run with --trust, or "
+            "`agy-py config trust`.",
+            err=True,
+        )
     runner = AgyRunner(binary)
     result = runner.prompt(
         prompt,
@@ -149,6 +165,8 @@ def doctor(json_output, binary):
                    f"({'exists' if info['settings_exists'] else 'missing'})")
         click.echo(f"agent data : {info['gemini_dir']} "
                    f"({'exists' if info['gemini_dir_exists'] else 'missing'})")
+        click.echo(f"workspace  : {info['cwd']} "
+                   f"({'trusted' if info['cwd_trusted'] else 'NOT trusted -- agy -p will hang here'})")
     sys.exit(core.EXIT_OK if info["binary_found"] else core.EXIT_ERROR)
 
 
@@ -227,6 +245,14 @@ def config_set(key, value):
         parsed = value
     core.set_setting(key, parsed)
     click.echo(f"Set {key} = {json.dumps(parsed)}")
+
+
+@config.command("trust")
+@click.argument("path", required=False)
+@handle_errors
+def config_trust(path):
+    """Add PATH (default: current folder) to agy's trustedWorkspaces."""
+    click.echo(f"Trusted workspace: {core.trust_workspace(path)}")
 
 
 @config.command("mcp-path")
